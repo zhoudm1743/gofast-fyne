@@ -22,14 +22,28 @@ func TestIntegration_RealDriver(t *testing.T) {
 		t.Skip("无显示服务器，跳过真实驱动集成测试")
 	}
 
+	for _, mode := range []string{"quit", "sigterm"} {
+		t.Run(mode, func(t *testing.T) {
+			runSmoke(t, mode)
+		})
+	}
+}
+
+// runSmoke 运行冒烟子进程；任何 panic / 非零退出 / 缺少 SMOKE-OK 均视为失败。
+func runSmoke(t *testing.T, mode string) {
+	t.Helper()
+
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
-	cmd := exec.CommandContext(ctx, "go", "run", "-tags", "integration", "./integration/smoke")
+	cmd := exec.CommandContext(ctx, "go", "run", "-tags", "integration", "./integration/smoke", mode)
 	cmd.Dir = "."
 	out, err := cmd.CombinedOutput()
-	t.Logf("smoke output:\n%s", out)
+	t.Logf("smoke[%s] output:\n%s", mode, out)
 	if err != nil {
 		t.Fatalf("冒烟程序失败: %v", err)
+	}
+	if strings.Contains(string(out), "panic") {
+		t.Fatal("冒烟输出包含 panic")
 	}
 	if !strings.Contains(string(out), "SMOKE-OK") {
 		t.Fatal("冒烟程序未输出 SMOKE-OK")

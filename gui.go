@@ -96,6 +96,7 @@ type gui struct {
 	onShutdown func()
 
 	visible      atomic.Bool
+	loopEnded    atomic.Bool // 事件循环已结束（Run 返回）；此后 Quit 不再触碰 Fyne
 	quitOnce     sync.Once
 	shutdownOnce sync.Once
 }
@@ -265,6 +266,7 @@ func (g *gui) saveWindowSize() {
 func (g *gui) Run() error {
 	g.visible.Store(true)
 	g.mainWin.ShowAndRun()
+	g.loopEnded.Store(true)
 	g.shutdownOnce.Do(func() {
 		if g.onShutdown != nil {
 			g.onShutdown()
@@ -275,8 +277,13 @@ func (g *gui) Run() error {
 
 // Quit 退出 Fyne 应用（幂等）。
 // 经 fyne.Do 派发，可从任意 goroutine 安全调用（如信号处理、后台任务）。
+// 事件循环已结束（如 SIGTERM 由 Fyne 自行优雅退出）时直接返回，
+// 避免对已销毁的 GLFW 资源二次清理。
 func (g *gui) Quit() {
 	g.quitOnce.Do(func() {
+		if g.loopEnded.Load() {
+			return
+		}
 		fyne.Do(func() { g.fyneApp.Quit() })
 	})
 }
