@@ -27,12 +27,16 @@ func TestLoadConfig_Full(t *testing.T) {
 	cfg := newTestConfig(t, `
 fyne:
   app_id: com.example.app
+  icon: resources/app.png
+  theme: dark
   window:
     title: 测试窗口
     width: 800
     height: 600
     fixed: true
     close: hide
+    icon: resources/win.png
+    remember_size: true
   menu:
     - label: 文件
       items:
@@ -50,7 +54,6 @@ fyne:
   tray:
     enabled: true
     icon: resources/icon.png
-    tooltip: 我的应用
     menu:
       - label: 显示主窗口
         action: show
@@ -63,6 +66,12 @@ fyne:
 	if c.AppID != "com.example.app" {
 		t.Errorf("AppID = %q, 期望 com.example.app", c.AppID)
 	}
+	if c.Icon != "resources/app.png" {
+		t.Errorf("Icon = %q, 期望 resources/app.png", c.Icon)
+	}
+	if c.Theme != ThemeDark {
+		t.Errorf("Theme = %q, 期望 %q", c.Theme, ThemeDark)
+	}
 	if c.Window.Title != "测试窗口" || c.Window.Width != 800 || c.Window.Height != 600 {
 		t.Errorf("Window = %+v, 期望 测试窗口 800x600", c.Window)
 	}
@@ -71,6 +80,12 @@ fyne:
 	}
 	if c.Window.Close != CloseHide {
 		t.Errorf("Window.Close = %q, 期望 %q", c.Window.Close, CloseHide)
+	}
+	if c.Window.Icon != "resources/win.png" {
+		t.Errorf("Window.Icon = %q, 期望 resources/win.png", c.Window.Icon)
+	}
+	if !c.Window.RememberSize {
+		t.Error("Window.RememberSize 应为 true")
 	}
 
 	if len(c.Menu) != 2 {
@@ -101,8 +116,8 @@ fyne:
 	if !c.Tray.Enabled {
 		t.Error("Tray.Enabled 应为 true")
 	}
-	if c.Tray.Icon != "resources/icon.png" || c.Tray.Tooltip != "我的应用" {
-		t.Errorf("Tray 解析错误: %+v", c.Tray)
+	if c.Tray.Icon != "resources/icon.png" {
+		t.Errorf("Tray.Icon = %q, 期望 resources/icon.png", c.Tray.Icon)
 	}
 	if len(c.Tray.Menu) != 2 || c.Tray.Menu[0].Action != ActionShow {
 		t.Errorf("托盘菜单解析错误: %+v", c.Tray.Menu)
@@ -120,6 +135,12 @@ func TestLoadConfig_Defaults(t *testing.T) {
 	}
 	if c.Window.Close != CloseQuit {
 		t.Errorf("Window.Close 默认应为 %q，实际 %q", CloseQuit, c.Window.Close)
+	}
+	if c.Theme != ThemeSystem {
+		t.Errorf("Theme 默认应为 %q，实际 %q", ThemeSystem, c.Theme)
+	}
+	if c.Window.RememberSize {
+		t.Error("窗口尺寸记忆默认应关闭")
 	}
 	if c.Tray.Enabled {
 		t.Error("托盘默认应关闭")

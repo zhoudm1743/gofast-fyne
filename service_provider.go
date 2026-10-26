@@ -26,6 +26,11 @@ func (sp *ServiceProvider) Register(app foundation.Application) {
 	app.Singleton("gui", func(app foundation.Application) (any, error) {
 		cfg := loadConfig(app.Config())
 
+		// 启动校验：close=hide 但没有托盘，窗口隐藏后将无法唤回
+		if cfg.Window.Close == CloseHide && !cfg.Tray.Enabled && app.Bound("log") {
+			app.MustMake("log").(contracts.Log).Warnf("[GoFast] fyne.window.close=hide 但未启用托盘（fyne.tray.enabled），窗口隐藏后将无法唤回")
+		}
+
 		var evt contracts.Event
 		if app.Bound("event") {
 			evt = app.MustMake("event").(contracts.Event)
@@ -53,13 +58,17 @@ func (sp *ServiceProvider) Boot(app foundation.Application) error { return nil }
 func (sp *ServiceProvider) ConfigDefaults() map[string]any {
 	d := defaultConfig()
 	return map[string]any{
-		"fyne.app_id":        d.AppID,
-		"fyne.window.title":  d.Window.Title,
-		"fyne.window.width":  d.Window.Width,
-		"fyne.window.height": d.Window.Height,
-		"fyne.window.fixed":  d.Window.Fixed,
-		"fyne.window.close":  d.Window.Close,
-		"fyne.tray.enabled":  d.Tray.Enabled,
+		"fyne.app_id":               d.AppID,
+		"fyne.icon":                 d.Icon,
+		"fyne.theme":                d.Theme,
+		"fyne.window.title":         d.Window.Title,
+		"fyne.window.width":         d.Window.Width,
+		"fyne.window.height":        d.Window.Height,
+		"fyne.window.fixed":         d.Window.Fixed,
+		"fyne.window.close":         d.Window.Close,
+		"fyne.window.icon":          d.Window.Icon,
+		"fyne.window.remember_size": d.Window.RememberSize,
+		"fyne.tray.enabled":         d.Tray.Enabled,
 	}
 }
 

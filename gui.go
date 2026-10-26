@@ -9,7 +9,11 @@ import (
 	"github.com/zhoudm1743/go-fast-framework/contracts"
 )
 
+// 主窗口名称：窗口级事件 payload 中 "window" 键的值用它标识主窗口。
+const mainWindowName = "main"
+
 // 窗口级事件名称，经框架事件总线派发，可用 On 订阅（回调在 UI 线程执行）。
+// 事件 payload 携带 "window" 键标识来源窗口（主窗口为 "main"）。
 const (
 	EventWindowShown  = "window.shown"
 	EventWindowHidden = "window.hidden"
@@ -38,6 +42,23 @@ type Gui interface {
 	// Visible 返回主窗口当前是否可见。
 	Visible() bool
 
+	// App 返回底层 Fyne 应用实例（高级用法：直接访问 Settings/Preferences 等）。
+	App() fyne.App
+
+	// SetMenu 以编程方式重建主窗口菜单栏（传入 nil 清除）。
+	// 与配置 fyne.menu 等效，支持运行期动态更新（未读数、最近文件等）。
+	SetMenu(items []MenuItem)
+	// SetTrayMenu 以编程方式重建托盘菜单；驱动不支持托盘时静默忽略。
+	SetTrayMenu(items []MenuItem)
+
+	// OpenWindow 打开（或复用）一个命名次级窗口并显示。
+	// 同名窗口已存在时直接显示并返回原实例；窗口关闭时自动注销。
+	OpenWindow(name, title string, content fyne.CanvasObject) fyne.Window
+	// WindowByName 按名称查找次级窗口（未找到返回 nil）。
+	WindowByName(name string) fyne.Window
+	// CloseWindow 关闭并注销命名窗口（不存在时无操作）。
+	CloseWindow(name string)
+
 	// Emit 向框架事件总线派发字符串命名的 UI 事件，
 	// 所有 On 监听者（含菜单/托盘触发路径）都会收到。
 	Emit(name string, payload map[string]any) error
@@ -47,6 +68,12 @@ type Gui interface {
 	Listen(e contracts.Eventer, fn func(args ...any))
 }
 
+// 主窗口尺寸的偏好存储键。
+const (
+	prefWidthKey  = "gofastfyne.window.width"
+	prefHeightKey = "gofastfyne.window.height"
+)
+
 // gui 是 Gui 接口的默认实现，窗口、菜单、托盘、事件桥接均在此。
 type gui struct {
 	fyneApp  fyne.App
@@ -55,7 +82,13 @@ type gui struct {
 	evt      contracts.Event
 	log      contracts.Log
 
+	appIcon fyne.Resource
+	winIcon fyne.Resource
 	mainWin fyne.Window
+
+	// 次级窗口注册表：name → window
+	winMu   sync.RWMutex
+	windows map[string]fyne.Window
 
 	handlersMu sync.RWMutex
 	handlers   map[string][]func(map[string]any)
@@ -67,6 +100,12 @@ type gui struct {
 	shutdownOnce sync.Once
 }
 
+// New 以编程方式创建 Gui，不依赖框架服务容器（高级用法与集成测试）。
+// evt 可为 nil；cfg 可用 defaultConfig 起点按字段覆盖。
+func New(fapp fyne.App, cfg Config, basePath string, evt contracts.Event) (Gui, error) {
+	return newGui(fapp, cfg, basePath, evt)
+}
+
 // newGui 创建 gui 实例并装配主窗口、菜单、托盘。
 // evt 可为 nil（无事件总线时桥接自动禁用，Emit 返回错误）。
 func newGui(fapp fyne.App, cfg Config, basePath string, evt contracts.Event) (*gui, error) {
@@ -76,6 +115,7 @@ func newGui(fapp fyne.App, cfg Config, basePath string, evt contracts.Event) (*g
 		basePath: basePath,
 		evt:      evt,
 		handlers: make(map[string][]func(map[string]any)),
+		windows:  make(map[string]fyne.Window),
 	}
 	if evt != nil {
 		evt.Register(map[contracts.Eventer][]contracts.EventListener{
@@ -83,17 +123,52 @@ func newGui(fapp fyne.App, cfg Config, basePath string, evt contracts.Event) (*g
 		})
 	}
 
-	g.mainWin = fapp.NewWindow(cfg.Window.Title)
-	g.mainWin.Resize(fyne.NewSize(float32(cfg.Window.Width), float32(cfg.Window.Height)))
-	g.mainWin.SetFixedSize(cfg.Window.Fixed)
-	if cfg.Window.Close == CloseHide {
+	wireLifecycle(fapp.Lifecycle(), g.emitEvent)
+
+	applyTheme(fapp, cfg.Theme)
+
+	// 应用图标：窗口默认继承；托盘图标未配置时也回退到它
+	if cfg.Icon != "" {
+		res, err := loadResource(basePath, cfg.Icon)
+		if err != nil {
+			return nil, err
+		}
+		fapp.SetIcon(res)
+		g.appIcon = res
+	}
+
+	// 窗口尺寸记忆：偏好存储覆盖配置值
+	if cfg.Window.RememberSize {
+		if w := fapp.Preferences().Int(prefWidthKey); w > 0 {
+			g.cfg.Window.Width = w
+		}
+		if h := fapp.Preferences().Int(prefHeightKey); h > 0 {
+			g.cfg.Window.Height = h
+		}
+	}
+
+	g.mainWin = fapp.NewWindow(g.cfg.Window.Title)
+	g.mainWin.Resize(fyne.NewSize(float32(g.cfg.Window.Width), float32(g.cfg.Window.Height)))
+	g.mainWin.SetFixedSize(g.cfg.Window.Fixed)
+	if g.cfg.Window.Icon != "" {
+		res, err := loadResource(basePath, g.cfg.Window.Icon)
+		if err != nil {
+			return nil, err
+		}
+		g.mainWin.SetIcon(res)
+		g.winIcon = res
+	}
+	if g.cfg.Window.Close == CloseHide {
 		g.mainWin.SetCloseIntercept(func() { g.HideMainWindow() })
 	}
-	g.mainWin.SetOnClosed(func() { g.emitEvent(EventWindowClosed) })
-	if len(cfg.Menu) > 0 {
-		g.mainWin.SetMainMenu(buildMainMenu(cfg.Menu, g.handleMenuItem))
+	g.mainWin.SetOnClosed(func() {
+		g.saveWindowSize()
+		g.emitWindowEvent(EventWindowClosed, mainWindowName)
+	})
+	if len(g.cfg.Menu) > 0 {
+		g.mainWin.SetMainMenu(buildMainMenu(g.cfg.Menu, g.handleMenuItem))
 	}
-	if cfg.Tray.Enabled {
+	if g.cfg.Tray.Enabled {
 		if err := g.setupTray(); err != nil {
 			return nil, err
 		}
@@ -103,9 +178,12 @@ func newGui(fapp fyne.App, cfg Config, basePath string, evt contracts.Event) (*g
 
 // setupTray 按配置装配系统托盘。非桌面驱动（如测试驱动）时静默跳过。
 func (g *gui) setupTray() error {
-	res, err := loadTrayIcon(g.basePath, g.cfg.Tray.Icon)
+	res, err := loadResource(g.basePath, g.cfg.Tray.Icon)
 	if err != nil {
 		return err
+	}
+	if res == nil {
+		res = g.appIcon // 未配置托盘图标时回退应用图标
 	}
 	desk, ok := g.fyneApp.(desktop.App)
 	if !ok {
@@ -150,13 +228,13 @@ func (g *gui) SetContent(c fyne.CanvasObject) { g.mainWin.SetContent(c) }
 func (g *gui) ShowMainWindow() {
 	g.mainWin.Show()
 	g.visible.Store(true)
-	g.emitEvent(EventWindowShown)
+	g.emitWindowEvent(EventWindowShown, mainWindowName)
 }
 
 func (g *gui) HideMainWindow() {
 	g.mainWin.Hide()
 	g.visible.Store(false)
-	g.emitEvent(EventWindowHidden)
+	g.emitWindowEvent(EventWindowHidden, mainWindowName)
 }
 
 func (g *gui) ToggleMainWindow() {
@@ -170,6 +248,19 @@ func (g *gui) ToggleMainWindow() {
 // Visible 返回主窗口当前是否可见。
 func (g *gui) Visible() bool { return g.visible.Load() }
 
+// App 返回底层 Fyne 应用实例。
+func (g *gui) App() fyne.App { return g.fyneApp }
+
+// saveWindowSize 将主窗口当前尺寸写入偏好存储（remember_size 启用时）。
+func (g *gui) saveWindowSize() {
+	if !g.cfg.Window.RememberSize {
+		return
+	}
+	sz := g.mainWin.Canvas().Size()
+	g.fyneApp.Preferences().SetInt(prefWidthKey, int(sz.Width))
+	g.fyneApp.Preferences().SetInt(prefHeightKey, int(sz.Height))
+}
+
 // Run 阻塞运行事件循环，退出后触发 onShutdown 一次。
 func (g *gui) Run() error {
 	g.visible.Store(true)
@@ -182,14 +273,89 @@ func (g *gui) Run() error {
 	return nil
 }
 
+// Quit 退出 Fyne 应用（幂等）。
+// 经 fyne.Do 派发，可从任意 goroutine 安全调用（如信号处理、后台任务）。
 func (g *gui) Quit() {
-	g.quitOnce.Do(func() { g.fyneApp.Quit() })
+	g.quitOnce.Do(func() {
+		fyne.Do(func() { g.fyneApp.Quit() })
+	})
 }
 
-// emitEvent 派发窗口级事件；无事件总线或监听者时静默忽略。
+// emitWindowEvent 派发窗口级事件，payload 携带来源窗口名。
+func (g *gui) emitWindowEvent(name, windowName string) {
+	if err := g.Emit(name, map[string]any{"window": windowName}); err != nil && g.log != nil {
+		g.log.Errorf("[GoFast] GUI 派发窗口事件 %s 失败: %v", name, err)
+	}
+}
+
+// emitEvent 派发应用级事件（无 payload）；无事件总线或监听者时静默忽略。
 func (g *gui) emitEvent(name string) {
 	if err := g.Emit(name, nil); err != nil && g.log != nil {
-		g.log.Errorf("[GoFast] GUI 派发窗口事件 %s 失败: %v", name, err)
+		g.log.Errorf("[GoFast] GUI 派发事件 %s 失败: %v", name, err)
+	}
+}
+
+// SetMenu 以编程方式重建主窗口菜单栏（nil 清除）。
+func (g *gui) SetMenu(items []MenuItem) {
+	if len(items) == 0 {
+		g.mainWin.SetMainMenu(nil)
+		return
+	}
+	g.mainWin.SetMainMenu(buildMainMenu(items, g.handleMenuItem))
+}
+
+// SetTrayMenu 以编程方式重建托盘菜单；驱动不支持托盘时静默忽略。
+func (g *gui) SetTrayMenu(items []MenuItem) {
+	desk, ok := g.fyneApp.(desktop.App)
+	if !ok {
+		if g.log != nil {
+			g.log.Warnf("[GoFast] 当前 Fyne 驱动不支持系统托盘，SetTrayMenu 被忽略")
+		}
+		return
+	}
+	desk.SetSystemTrayMenu(buildMenu(items, g.handleMenuItem))
+}
+
+// OpenWindow 打开（或复用）一个命名次级窗口并显示。
+func (g *gui) OpenWindow(name, title string, content fyne.CanvasObject) fyne.Window {
+	g.winMu.RLock()
+	w, ok := g.windows[name]
+	g.winMu.RUnlock()
+	if ok {
+		w.Show()
+		return w
+	}
+
+	w = g.fyneApp.NewWindow(title)
+	w.SetContent(content)
+	w.SetOnClosed(func() {
+		g.winMu.Lock()
+		delete(g.windows, name)
+		g.winMu.Unlock()
+		g.emitWindowEvent(EventWindowClosed, name)
+	})
+	g.winMu.Lock()
+	g.windows[name] = w
+	g.winMu.Unlock()
+	w.Show()
+	g.emitWindowEvent(EventWindowShown, name)
+	return w
+}
+
+// WindowByName 按名称查找次级窗口（未找到返回 nil）。
+func (g *gui) WindowByName(name string) fyne.Window {
+	g.winMu.RLock()
+	defer g.winMu.RUnlock()
+	return g.windows[name]
+}
+
+// CloseWindow 关闭并注销命名窗口（不存在时无操作）。
+func (g *gui) CloseWindow(name string) {
+	g.winMu.RLock()
+	w, ok := g.windows[name]
+	g.winMu.RUnlock()
+	if ok {
+		w.Close()
 	}
 }
 

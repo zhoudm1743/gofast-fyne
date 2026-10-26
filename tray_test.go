@@ -13,7 +13,7 @@ func TestLoadTrayIcon_OK(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	res, err := loadTrayIcon(dir, "icon.png")
+	res, err := loadResource(dir, "icon.png")
 	if err != nil {
 		t.Fatalf("加载托盘图标失败: %v", err)
 	}
@@ -26,13 +26,13 @@ func TestLoadTrayIcon_OK(t *testing.T) {
 }
 
 func TestLoadTrayIcon_MissingFile(t *testing.T) {
-	if _, err := loadTrayIcon(t.TempDir(), "nope.png"); err == nil {
+	if _, err := loadResource(t.TempDir(), "nope.png"); err == nil {
 		t.Error("文件不存在应返回错误")
 	}
 }
 
 func TestLoadTrayIcon_EmptyPath(t *testing.T) {
-	res, err := loadTrayIcon(t.TempDir(), "")
+	res, err := loadResource(t.TempDir(), "")
 	if err != nil || res != nil {
 		t.Errorf("空路径应返回 nil, nil，实际 %v, %v", res, err)
 	}

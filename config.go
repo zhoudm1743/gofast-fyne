@@ -30,24 +30,27 @@ type MenuItem struct {
 
 // WindowConfig 主窗口配置。
 type WindowConfig struct {
-	Title  string
-	Width  int
-	Height int
-	Fixed  bool   // 固定尺寸，禁止缩放
-	Close  string // CloseQuit | CloseHide
+	Title        string
+	Width        int
+	Height       int
+	Fixed        bool   // 固定尺寸，禁止缩放
+	Close        string // CloseQuit | CloseHide
+	Icon         string // 窗口图标（相对应用根目录；空则继承应用图标）
+	RememberSize bool   // 记忆主窗口尺寸，重启后恢复
 }
 
 // TrayConfig 系统托盘配置。
 type TrayConfig struct {
 	Enabled bool
-	Icon    string // 图标文件路径（相对应用根目录）
-	Tooltip string
+	Icon    string // 图标文件路径（相对应用根目录）；空则继承应用图标
 	Menu    []MenuItem
 }
 
 // Config 插件配置，对应 config.yaml 中的 fyne 段。
 type Config struct {
 	AppID  string
+	Icon   string // 应用图标（相对应用根目录）
+	Theme  string // ThemeSystem | ThemeDark | ThemeLight
 	Window WindowConfig
 	Menu   []MenuItem
 	Tray   TrayConfig
@@ -57,6 +60,7 @@ type Config struct {
 func defaultConfig() Config {
 	return Config{
 		AppID: "com.gofast.desktop",
+		Theme: ThemeSystem,
 		Window: WindowConfig{
 			Title:  "GoFast",
 			Width:  1024,
@@ -70,15 +74,18 @@ func defaultConfig() Config {
 func loadConfig(cfg contracts.Config) Config {
 	c := defaultConfig()
 	c.AppID = cfg.GetString("fyne.app_id", c.AppID)
+	c.Icon = cfg.GetString("fyne.icon", c.Icon)
+	c.Theme = normalizeTheme(cfg.GetString("fyne.theme", c.Theme))
 	c.Window.Title = cfg.GetString("fyne.window.title", c.Window.Title)
 	c.Window.Width = cfg.GetInt("fyne.window.width", c.Window.Width)
 	c.Window.Height = cfg.GetInt("fyne.window.height", c.Window.Height)
 	c.Window.Fixed = cfg.GetBool("fyne.window.fixed", c.Window.Fixed)
 	c.Window.Close = normalizeClose(cfg.GetString("fyne.window.close", c.Window.Close))
+	c.Window.Icon = cfg.GetString("fyne.window.icon", c.Window.Icon)
+	c.Window.RememberSize = cfg.GetBool("fyne.window.remember_size", c.Window.RememberSize)
 	c.Menu = parseMenuItems(cfg.Get("fyne.menu"))
 	c.Tray.Enabled = cfg.GetBool("fyne.tray.enabled", c.Tray.Enabled)
 	c.Tray.Icon = cfg.GetString("fyne.tray.icon", c.Tray.Icon)
-	c.Tray.Tooltip = cfg.GetString("fyne.tray.tooltip", c.Tray.Tooltip)
 	c.Tray.Menu = parseMenuItems(cfg.Get("fyne.tray.menu"))
 	return c
 }

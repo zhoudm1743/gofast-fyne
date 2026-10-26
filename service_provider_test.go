@@ -1,6 +1,7 @@
 package gofastfyne
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
@@ -8,6 +9,7 @@ import (
 	"fyne.io/fyne/v2"
 	"fyne.io/fyne/v2/test"
 	"github.com/zhoudm1743/go-fast-framework/config"
+	"github.com/zhoudm1743/go-fast-framework/contracts"
 	"github.com/zhoudm1743/go-fast-framework/event"
 	"github.com/zhoudm1743/go-fast-framework/foundation"
 )
@@ -19,6 +21,16 @@ func useTestDriver(t *testing.T) {
 	orig := newFyneApp
 	newFyneApp = func(string) fyne.App { return test.NewApp() }
 	t.Cleanup(func() { newFyneApp = orig })
+}
+
+// warnLog 捕获 Warnf 调用的日志替身（未使用的方法走内嵌空实现）。
+type warnLog struct {
+	contracts.Log
+	warns []string
+}
+
+func (l *warnLog) Warnf(format string, args ...any) {
+	l.warns = append(l.warns, fmt.Sprintf(format, args...))
 }
 
 func writeFile(t *testing.T, dir, name string, data []byte) {
@@ -57,7 +69,11 @@ func TestServiceProvider_ConfigDefaults(t *testing.T) {
 		t.Fatal("ServiceProvider 应实现 ConfigProvider")
 	}
 	defaults := cp.ConfigDefaults()
-	for _, key := range []string{"fyne.app_id", "fyne.window.title", "fyne.window.width", "fyne.window.height", "fyne.window.close"} {
+	for _, key := range []string{
+		"fyne.app_id", "fyne.icon", "fyne.theme",
+		"fyne.window.title", "fyne.window.width", "fyne.window.height",
+		"fyne.window.close", "fyne.window.icon", "fyne.window.remember_size",
+	} {
 		if _, exists := defaults[key]; !exists {
 			t.Errorf("默认配置缺少 %s", key)
 		}
@@ -117,4 +133,24 @@ func TestServiceProvider_ShutdownHookQuitsGui(t *testing.T) {
 	// 框架 Shutdown 不应 panic（内部调用 Fyne Quit）。
 	app.Shutdown()
 	_ = gui
+}
+
+func TestServiceProvider_WarnsWhenCloseHideWithoutTray(t *testing.T) {
+	useTestDriver(t)
+	dir := t.TempDir()
+	writeFile(t, dir, "config/config.yaml", []byte("fyne:\n  window:\n    close: hide\n"))
+
+	fake := &warnLog{}
+	app := foundation.NewApplication(dir)
+	app.Instance("log", fake)
+	app.SetProviders([]foundation.ServiceProvider{
+		&config.ServiceProvider{},
+		&ServiceProvider{},
+	})
+	app.Boot()
+	app.MustMake("gui") // 触发延迟初始化
+
+	if len(fake.warns) == 0 {
+		t.Error("close=hide 且未启用托盘时应输出 Warn 日志")
+	}
 }
